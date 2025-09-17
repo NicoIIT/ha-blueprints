@@ -34,9 +34,7 @@ blueprint:
           domain:
           - binary_sensor
           - input_button
-          - input_boolean
           - button
-          - switch
     fixed_scenes:
       name: Fixed Scenes
       description: The scenes to be turned ON on switch ON. The entities defined in the "Fixed Scenes" must NOT appear in the "Restored Entities".
@@ -78,6 +76,8 @@ variables:
 triggers:
   - trigger: state
     entity_id: !input button_switch
+    from: "off"
+    to: "on"
 
 conditions: []
 actions:

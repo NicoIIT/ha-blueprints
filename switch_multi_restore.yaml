@@ -30,9 +30,7 @@ blueprint:
           domain:
           - binary_sensor
           - input_button
-          - input_boolean
           - button
-          - switch
     on_entities:
       name: Always ON Entities
       description: The entities that are always switched ON on switch ON
@@ -92,6 +90,8 @@ variables:
 triggers:
   - trigger: state
     entity_id: !input button_switch
+    from: "off"
+    to: "on"
 
 conditions: []
 actions:

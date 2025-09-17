@@ -25,9 +25,7 @@ blueprint:
           domain:
           - binary_sensor
           - input_button
-          - input_boolean
           - button
-          - switch
     scene_restore_id:
       name: Restored Scene
       description: The scene to be turned ON on switch ON.
@@ -43,6 +41,8 @@ variables:
 triggers:
   - trigger: state
     entity_id: !input button_switch
+    from: "off"
+    to: "on"
 
 conditions: []
 actions:
