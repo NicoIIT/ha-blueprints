@@ -1,0 +1,35 @@
+blueprint:
+  name: Convert a binary_sensor to a Button
+  description: |
+    For use when a Button is needed while you only have a binary_sensor: the Button press is simulated each time the binary_sensor changes state to "on"
+
+  domain: automation
+  input:
+    input_sensor:
+      name: Input Binary Sensor
+      description: The 2 positions input Binary Sensor
+      selector:
+        entity:
+          domain:
+          - binary_sensor
+    output_button:
+      name: Output Button
+      description: The input_button which will be "pressed" on each Input Binary Sensor state changes to "on"
+      selector:
+        entity:
+          domain:
+          - input_button
+
+mode: queued
+
+triggers:
+  - trigger: state
+    entity_id: !input input_sensor
+    not_from: ['unavailable', 'unknown']
+    to: "on"
+
+conditions: []
+actions:
+- action: input_button.press
+  target:
+    entity_id: !input output_button

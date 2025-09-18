@@ -24,11 +24,13 @@ blueprint:
   input:
     button_switch:
       name: Wall Switch Button
-      description: The binary sensor / input_button / button Wall Switch
+      description: The (input_button / button / input_switch / switch) Wall Switch
       selector:
         entity:
           domain:
-          - binary_sensor
+          - input_switch
+          - input_boolean
+          - switch
           - input_button
           - button
     on_entities:
@@ -90,8 +92,8 @@ variables:
 triggers:
   - trigger: state
     entity_id: !input button_switch
-    from: "off"
-    to: "on"
+    not_from: ['unavailable', 'unknown']
+    not_to: ['unavailable', 'unknown']
 
 conditions: []
 actions:
