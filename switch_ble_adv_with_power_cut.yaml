@@ -3,38 +3,39 @@ blueprint:
   description: |
     Use a single Wall Switch to cut the power supply of a BLE ADV device.
 
-    The implementation proposed is the following:
-
-        When the "Wall Switch Button" is switched OFF:
-            The entities state not part of "Fixed Scenes" are saved in dynamic "Restored Scenes" IF at least one of them is ON
-            All device entities are switched OFF
-
-        When the "Wall Switch Button" is switched ON:
-            we wait for "Delay After ON" (for the Device to be initialized and ready to receive commands)
-            if the origin of the switch was an entity switch ON:
-                re apply the entity switch ON
-            else:
-                the "Fixed Scenes" are turned ON
-                if it exists, the dynamic "Restored Scenes" are turned ON (and deleted)
-                if no device entity is ON after that, the "Default Scenes" are turned ON
-                if no device entity is ON after that, all the light entities of the device are turned ON
-
-        When one of the device entity is switched OFF:
-            if all device entities are OFF and the "Wall Switch Button" is ON:
-                The "Wall Switch Button" is turned OFF
-
-        When one of the device entity is switched ON:
-            if the "Wall Switch Button" is OFF:
-                The state of the switched ON entity is saved
-                The entity is switched OFF (will be re switched ON when Device will be ready)
-                The "Wall Switch Button" is turned ON
-            else:
-                The entities state not part of "Fixed Scenes" are saved in dynamic "Restored Scenes"
+    Several behaviors needs to be implemented as side scenes (see parameters) depending on your wishes, see [examples](https://github.com/NicoIIT/ha-ble-adv/wiki/Wall-Switches#examples-for-switch-cutting-power-supply-of-the-device).
 
     Side Notes:
     * All entities in "Fixed Scenes" and "Default Scenes" MUST be owned by the Device which power supply is cut by the Wall Switch.
-    * It is recommended to define at least one "Fixed Scene" (or a "Default Scene") that overrides the default behaviour of the Device when its power supply is re-instated.
-    * On HA Restart or Scenes Reload, the "Restored Scenes" are lost
+    * On HA Restart or Scenes Reload, the "Restore ON Scene" is lost, thus the need for "Default Scenes" if you have not defined "Fixed Scenes"
+
+    The implementation proposed is done in 4 automations with 4 different triggers:
+
+        1. When the "Wall Switch" is switched OFF:
+            The entities ON are saved in the dynamic "Restore ON Scene" IF at least one of them is ON
+            All device entities are switched OFF
+
+        2. When the "Wall Switch" is switched ON:
+            if there is NO entities ON: this is a Switch ON using the Wall Switch:
+                Wait for "Delay After ON" for the Device to be available
+                the "Fixed Scenes" are turned ON
+                the entities part of the dynamic "Restore ON Scene" and not part of "Fixed Scenes" are turned ON
+                the other entities (Not in "Restore ON Scene" nor in "Fixed Scene") are turned OFF (Forced, thanks to 'Force Send' Option)
+                if no device entity is ON after that, the "Default Scenes" are turned ON
+                if no device entity is ON after that, all the light entities of the device are turned ON
+
+        3. When one of the device entity is switched OFF:
+            if all device entities are OFF and the "Wall Switch" is ON:
+                The "Wall Switch" is turned OFF
+            if at least one entity is still ON, save the ON entities in the dynamic "Restore ON Scene"
+
+        4. When one of the device entity is switched ON:
+            The entities ON are saved in the dynamic "Restore ON Scene"
+            if the "Wall Switch" is OFF, this is a Switch ON by entity switch ON:
+                The "Wall Switch" is turned ON
+                Wait for "Delay After ON" for the Device to be available
+                The ON entities are RE Switched ON (Should work thanks to 'Force Send' Option)
+                All other entities are Switched OFF (Forced, thanks to 'Force Send' Option)
 
 
   domain: automation
@@ -88,22 +89,21 @@ variables:
   fixed_scenes: !input fixed_scenes
   default_scenes: !input default_scenes
 
-  dev_entities: "{{ device_entities(device_id) | list }}"
+  dev_all_entities: "{{ device_entities(device_id) | list }}"
+  dev_fans: "{{ dev_all_entities | select('match', 'fan.') | list }}"
+  dev_lights: "{{ dev_all_entities | select('match', 'light.') | list }}"
+  dev_entities: "{{ dev_lights + dev_fans }}"
+  dev_entities_on: "{{ dev_entities | select('is_state', 'on') | list}}"
+
   fixed_scenes_entities: "{{ fixed_scenes | map('state_attr', 'entity_id') | sum(start=[]) }}"
-  restored_entities: "{{ dev_entities | reject('in', fixed_scenes_entities) | list }}"
-  restored_entities_on: "{{ restored_entities | select('is_state', 'on') | list }}"
-  restored_fans: "{{ restored_entities | select('match', 'fan.') | list }}"
-  restored_lights: "{{ restored_entities | select('match', 'light.') | list }}"
+  restored_fans: "{{ dev_fans | reject('in', fixed_scenes_entities) | list }}"
+  restored_lights: "{{ dev_lights | reject('in', fixed_scenes_entities) | list }}"
 
   auto_id: "{{ this.entity_id.replace('.', '_') }}"
-  restore_fan_id: "restore_fan_{{ auto_id }}"
-  scene_restore_fan_id: "scene.{{ restore_fan_id }}"
-  restore_light_id: "restore_light_{{ auto_id }}"
-  scene_restore_light_id: "scene.{{ restore_light_id }}"
   restore_on_id: "restore_on_{{ auto_id }}"
   scene_restore_on_id: "scene.{{ restore_on_id }}"
 
-  button_switch_on: "{{ is_state(button_switch, 'on') }}"
+  snapshot_on_entities: "{{ state_attr(scene_restore_on_id, 'entity_id') if states[scene_restore_on_id] != None else [] }}"
 
 triggers:
   - id: "switch_off"
@@ -137,92 +137,81 @@ actions:
     sequence:
     - if:
       - condition: template
-        value_template: "{{ restored_entities_on | length > 0}}"
-      then: # At least one "Restore Entities" ON: save snapshots
-      - if:
-        - condition: template
-          value_template: "{{ restored_lights | length > 0}}"
-        then:
-        - action: scene.create # or replace if exists
-          data:
-            scene_id: "{{ restore_light_id }}"
-            snapshot_entities: "{{ restored_lights }}"
-      - if:
-        - condition: template
-          value_template: "{{ restored_fans | length > 0}}"
-        then:
-        - action: scene.create # or replace if exists
-          data:
-            scene_id: "{{ restore_fan_id }}"
-            snapshot_entities: "{{ restored_fans }}"
-    - repeat:
-        for_each: "{{ dev_entities | select('is_state', 'on') | list }}"
-        sequence:
-        - action: homeassistant.turn_off
-          target:
-            entity_id: "{{ repeat.item }}"
+        value_template: "{{ dev_entities_on | length > 0}}"
+      then: # At least one dev entity ON: save snapshot of ON entities and switch OFF
+      - action: scene.create # or replace if exists
+        data:
+          scene_id: "{{ restore_on_id }}"
+          snapshot_entities: "{{ dev_entities_on }}"
+      - repeat: # Switch all entities OFF
+          for_each: "{{ dev_entities_on }}"
+          sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ repeat.item }}"
+
   - conditions:
     - condition: trigger
       id: 'switch_on'
     sequence:
-    - delay: !input delay_on
     - if:
       - condition: template
-        value_template: "{{ states[scene_restore_on_id] != None }}"
-      then: # ON initially triggered by a Device entity switched ON from HA or a Remote, not the Switch: Re Apply the Scene captured on 'one_ent_on'
-        - action: scene.turn_on
-          data:
-            entity_id: "{{ scene_restore_on_id }}"
-        - action: scene.delete
-          data:
-            entity_id: "{{ scene_restore_on_id }}"
-      else: # ON triggered by the Switch ON: apply the Fixed Scenes / Restored Scene / Default ...
-      - repeat: # Apply Fixed Scenes
-          for_each: "{{ fixed_scenes }}"
-          sequence:
-          - action: scene.turn_on
-            data:
-              entity_id: "{{ repeat.item }}"
-      - if: # Apply Light Restore Scene
-        - condition: template
-          value_template: "{{ states[scene_restore_light_id] != None }}"
-        then:
-        - action: scene.turn_on
-          data:
-            entity_id: "{{ scene_restore_light_id }}"
-        - action: scene.delete
-          data:
-            entity_id: "{{ scene_restore_light_id }}"
-      - if: # Apply Fan Restore Scene
-        - condition: template
-          value_template: "{{ states[scene_restore_fan_id] != None }}"
-        then:
-        - action: scene.turn_on
-          data:
-            entity_id: "{{ scene_restore_fan_id }}"
-        - action: scene.delete
-          data:
-            entity_id: "{{ scene_restore_fan_id }}"
-      - if: # Best Effort: restore default_scenes if still no entity is ON after that
-        - condition: template
-          value_template: "{{ dev_entities | select('is_state', 'on') | list | length == 0 }}"
-        then:
-        - repeat:
-            for_each: "{{ default_scenes }}"
+        value_template: "{{ dev_entities_on | length == 0 }}"
+      then: # Turn ON by Switch Turn ON
+        - delay: !input delay_on # Wait for the device to be available
+        - repeat: # Apply the Fixed Scenes
+            for_each: "{{ fixed_scenes }}"
             sequence:
             - action: scene.turn_on
               data:
                 entity_id: "{{ repeat.item }}"
-      - if: # Last Effort: turn all light ON if still no entity is ON after that
-        - condition: template
-          value_template: "{{ dev_entities | select('is_state', 'on') | list | length == 0 }}"
-        then:
-        - repeat:
-            for_each: "{{ dev_entities | select('match', 'light.') | list }}"
+        # Handle the remaining lights
+        - repeat: # Restore the lights ON part of Snapshot
+            for_each: "{{ restored_lights | select('in', snapshot_on_entities) | list }}"
             sequence:
             - action: homeassistant.turn_on
-              data:
+              target:
                 entity_id: "{{ repeat.item }}"
+        - repeat: # Switch all other light entities OFF
+            for_each: "{{ restored_lights | reject('in', snapshot_on_entities) | list }}"
+            sequence:
+            - action: homeassistant.turn_off
+              target:
+                entity_id: "{{ repeat.item }}"
+        # Handle the remaining fans
+        - repeat: # Restore the fans ON part of Snapshot
+            for_each: "{{ restored_fans | select('in', snapshot_on_entities) | list }}"
+            sequence:
+            - action: homeassistant.turn_on
+              target:
+                entity_id: "{{ repeat.item }}"
+        - repeat: # Switch all other fan entities OFF
+            for_each: "{{ restored_fans | reject('in', snapshot_on_entities) | list }}"
+            sequence:
+            - action: homeassistant.turn_off
+              target:
+                entity_id: "{{ repeat.item }}"
+        - if: # Best Effort: restore default_scenes if still no entity is ON after that
+          - condition: template
+            value_template: "{{ dev_entities | select('is_state', 'on') | list | length == 0 }}"
+          then:
+          - repeat:
+              for_each: "{{ default_scenes }}"
+              sequence:
+              - action: scene.turn_on
+                data:
+                  entity_id: "{{ repeat.item }}"
+        - if: # Last Effort: turn all light ON if still no entity is ON after that
+          - condition: template
+            value_template: "{{ dev_entities | select('is_state', 'on') | list | length == 0 }}"
+          then:
+          - repeat:
+              for_each: "{{ dev_lights }}"
+              sequence:
+              - action: homeassistant.turn_on
+                data:
+                  entity_id: "{{ repeat.item }}"
+
   - conditions:
     - condition: trigger
       id: 'one_ent_off'
@@ -234,42 +223,47 @@ actions:
       - action: homeassistant.turn_off
         target:
           entity_id: "{{ button_switch }}"
+    - if:
+      - condition: template
+        value_template: "{{ (dev_entities_on | length > 0) and not is_state(button_switch, 'off') }}"
+      then: # One entity switched OFF, but button NOT OFF and at least one entity still ON: refresh snapshot
+      - action: scene.create # or replace if exists
+        data:
+          scene_id: "{{ restore_on_id }}"
+          snapshot_entities: "{{ dev_entities_on }}"
+
   - conditions:
     - condition: trigger
       id: 'one_ent_on'
     sequence:
+    - action: scene.create # or replace if exists
+      data:
+        scene_id: "{{ restore_on_id }}"
+        snapshot_entities: "{{ dev_entities_on }}"
     - if:
       - condition: template
         value_template: "{{ is_state(button_switch, 'off') }}"
-      then:
-      - action: scene.create # or replace if exists
-        data:
-          scene_id: "{{ restore_on_id }}"
-          snapshot_entities: "{{ dev_entities }}"
+      then: # Switch ON by entity Switch ON
       - action: homeassistant.turn_on
         target:
           entity_id: "{{ button_switch }}"
-      - repeat: # Switch OFF the entities, so that they could be re switched ON later
-          for_each: "{{ dev_entities | select('is_state', 'on') | list }}"
+      - delay: !input delay_on # Wait for the device to be available
+      - repeat: # RE Switch initially ON entity ON a new time (should work thanks to 'Force Send' Option)
+          for_each: "{{ dev_entities_on }}"
+          sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ repeat.item }}"
+      - repeat: # Switch all other light entities OFF
+          for_each: "{{ dev_lights | reject('in', dev_entities_on) | list }}"
           sequence:
           - action: homeassistant.turn_off
             target:
               entity_id: "{{ repeat.item }}"
-      else:
-      - if:
-        - condition: template
-          value_template: "{{ restored_lights | length > 0}}"
-        then:
-        - action: scene.create # or replace if exists
-          data:
-            scene_id: "{{ restore_light_id }}"
-            snapshot_entities: "{{ restored_lights }}"
-      - if:
-        - condition: template
-          value_template: "{{ restored_fans | length > 0}}"
-        then:
-        - action: scene.create # or replace if exists
-          data:
-            scene_id: "{{ restore_fan_id }}"
-            snapshot_entities: "{{ restored_fans }}"
+      - repeat: # Switch all other fan entities OFF
+          for_each: "{{ dev_fans | reject('in', dev_entities_on) | list }}"
+          sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ repeat.item }}"
 
